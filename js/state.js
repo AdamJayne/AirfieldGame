@@ -120,7 +120,7 @@
   AF.sandbox = new URLSearchParams(location.search).has('sandbox');
 
   AF.save = function (s) {
-    if (AF.sandbox) return true;
+    if (AF.sandbox || !s || s.demo) return true; // the title screen's demo station is never saved
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(s));
       return true;

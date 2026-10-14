@@ -1,8 +1,9 @@
-// Entry point: load or start a game, pick a renderer, and run the main loop.
+// Entry point: pick a renderer, open the title menu (with the demo station running behind it),
+// and run the main loop.
 (function (AF) {
   'use strict';
 
-  AF.state = AF.load() || AF.newGame();
+  AF.state = AF.demo.create();
 
   // Prefer the 3D view; fall back to the 2D map if Three.js or WebGL is unavailable.
   const canvas = document.getElementById('field');
@@ -28,6 +29,8 @@
 
   AF.ui.init();
   AF.ui.setTab('station');
+  AF.menu.init();
+  AF.menu.show();
 
   let last = performance.now();
   let acc = 0;
@@ -36,9 +39,10 @@
   function frame(now) {
     const dt = Math.min(250, now - last);
     last = now;
+    AF.menu.frame(); // runs the demo station while the menu is up (it may swap AF.state)
     const s = AF.state;
 
-    const mult = AF.SPEEDS[s.speed] || 0;
+    const mult = s.demo ? AF.demo.speed : AF.SPEEDS[s.speed] || 0;
     if (mult > 0) {
       acc += (dt / 1000) * AF.MINUTES_PER_SECOND * mult;
       while (acc >= 1 && s.speed > 0) { AF.sim.step(s); acc -= 1; } // stop at once if a raid warning pauses
@@ -48,12 +52,14 @@
 
     AF.view.draw(s, now);
 
-    uiTimer += dt;
-    if (uiTimer > 150) AF.ui.updateHeader();
-    if (AF.dirty || uiTimer > 600) {
-      AF.ui.update();
-      AF.dirty = false;
-      uiTimer = 0;
+    if (!AF.menu.open) {
+      uiTimer += dt;
+      if (uiTimer > 150) AF.ui.updateHeader();
+      if (AF.dirty || uiTimer > 600) {
+        AF.ui.update();
+        AF.dirty = false;
+        uiTimer = 0;
+      }
     }
     if (AF.wantSave) { AF.save(s); AF.wantSave = false; }
 
@@ -61,5 +67,5 @@
   }
   requestAnimationFrame(frame);
 
-  window.addEventListener('beforeunload', () => AF.save(AF.state));
+  window.addEventListener('beforeunload', () => AF.save(AF.menu.game()));
 })(window.AF);

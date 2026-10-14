@@ -26,7 +26,20 @@ powershell -ExecutionPolicy Bypass -File tools\serve.ps1
 
 then open http://localhost:8765.
 
+## Title menu
+
+The game opens on a title menu with a demo station playing behind it: a cinematic camera
+cuts between raids coming in (fighters and AA guns firing, bombs falling on the field),
+aircraft taxiing, tows to the hangar, refuelling, and buildings going up. From the menu you can
+**Resume** your saved game, start a **New game** (or **Play**, the first time), read **How to
+play**, or see **About**. In a game, **Guide** opens How to Play (pausing the game) and **Menu**
+saves and returns to the title menu.
+
 ## How to play
+
+The in-game guide (Guide button, or How to play on the menu) covers everything in more detail.
+In brief:
+
 
 - **Missions**: pick aircraft for an order from Group HQ, choose how they fly it (Cautious,
   Standard or Aggressive), and launch. Success odds depend on aircraft stats, pilot skill,
@@ -100,6 +113,8 @@ status. The game autosaves each day to browser storage.
 | `js/three/world.js` | Countryside, airfield surfaces, sky, sun and moon lighting, clouds |
 | `js/three/render3d.js` | 3D view: camera, taxi/takeoff/landing animations, picking, labels |
 | `js/ui.js` | Header, tabbed command panel, log, tooltips, dialogs |
+| `js/demo.js` | The demo station behind the title menu, and the director that keeps it busy |
+| `js/menu.js` | Title menu, How to Play guide, new-game welcome card |
 | `js/main.js` | Renderer selection and main loop |
 
 Everything in the 3D scene is generated in code. There are no image or model files.

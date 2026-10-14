@@ -819,7 +819,7 @@
     tender.position.set(-w / 2 - 6, 0, d / 2 + 4);
     tender.rotation.y = Math.PI;
     g.add(tender);
-    return withMeta(g, { footprint: { w: 34, d: 30 }, labelY: level >= 2 ? 13 : 10, flag });
+    return withMeta(g, { footprint: { w: 34, d: 30 }, scaffold: { w: w + 3, d: d + 4 }, labelY: level >= 2 ? 13 : 10, flag });
   };
 
   // ---------- defences ----------
@@ -830,6 +830,31 @@
     return ring;
   }
 
+  // A gun (or searchlight) mount that can aim: `yaw` turns about the vertical at the pivot, and
+  // `pitch` (its child) elevates. At rest the barrel points along -z; pitch.rotation.x > 0 raises
+  // it. `barrel` slides back on recoil; `muzzle` marks the end of the barrel.
+  function aimMount(g, pivotY, kind) {
+    const yaw = new THREE.Group();
+    yaw.position.y = pivotY;
+    const pitch = new THREE.Group();
+    yaw.add(pitch);
+    const barrel = new THREE.Group();
+    pitch.add(barrel);
+    const muzzle = new THREE.Object3D();
+    barrel.add(muzzle);
+    g.add(yaw);
+    g.userData.mount = { kind, yaw, pitch, barrel, muzzle };
+    return g.userData.mount;
+  }
+
+  // Barrel along -z from the pivot, `len` long.
+  function barrelMesh(len, r0, r1, material) {
+    const geo = new THREE.CylinderGeometry(r1, r0, len, 12);
+    geo.translate(0, len / 2, 0);
+    geo.rotateX(-Math.PI / 2);
+    return mesh(geo, material);
+  }
+
   function lewisPost() {
     const g = new THREE.Group();
     g.add(sandbagRing(2.2, 1.1));
@@ -837,31 +862,44 @@
       const a = (i / 3) * Math.PI * 2;
       g.add(strut(V3(Math.cos(a) * 0.5, 0, Math.sin(a) * 0.5), V3(0, 1.2, 0), 0.03, MAT.black()));
     }
-    const gun = new THREE.Group();
-    gun.add(box(0.12, 0.14, 1.3, MAT.black(), 0, 0, 0));
+    const m = aimMount(g, 1.25, 'lewis');
+    m.yaw.add(cyl(0.05, 0.05, 0.12, MAT.black(), 0, -0.06, 0)); // pintle
+    m.barrel.add(box(0.12, 0.14, 1.0, MAT.black(), 0, -0.07, -0.25));
+    m.barrel.add(barrelMesh(0.45, 0.035, 0.03, MAT.black()).translateZ(-0.75));
     const drum = mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.08, 14), MAT.black());
-    drum.position.set(0, 0.16, 0.1);
-    gun.add(drum);
-    gun.position.set(0, 1.25, 0);
-    gun.rotation.x = 0.7;
-    g.add(gun);
+    drum.position.set(0, 0.12, -0.2);
+    m.barrel.add(drum);
+    m.barrel.add(box(0.05, 0.16, 0.25, MAT.paint('#5e4630', 0.8), 0, -0.14, 0.32)); // stock
+    m.muzzle.position.set(0, 0, -1.2);
     const f = M.figure('#5a5340');
-    f.position.set(0.3, 0, 0.8);
+    f.position.set(0.25, 0, 0.75);
     g.add(f);
     return withMeta(g, { gun: V3(0, 1.6, -0.4) });
   }
 
   function boforsPit() {
     const g = new THREE.Group();
+    const olive = MAT.paint('#4b5233', 0.7);
     g.add(sandbagRing(4, 1.3));
-    g.add(cyl(1.0, 1.2, 0.6, MAT.paint('#4b5233', 0.7)));
-    g.add(box(1.4, 1.0, 1.6, MAT.paint('#4b5233', 0.7), 0, 0.6, 0));
-    const barrel = mesh(new THREE.CylinderGeometry(0.07, 0.09, 3.6, 10), MAT.black());
-    barrel.geometry.translate(0, 1.8, 0);
-    barrel.position.set(0, 1.3, 0);
-    barrel.rotation.x = -0.75;
-    g.add(barrel);
-    g.add(box(1.6, 0.9, 0.08, MAT.paint('#4b5233', 0.7), 0, 1.2, -0.5)); // shield
+    g.add(cyl(1.0, 1.2, 0.5, olive)); // fixed platform
+    const m = aimMount(g, 0.5, 'bofors');
+    m.yaw.add(cyl(0.9, 0.9, 0.15, olive));
+    m.yaw.add(box(1.4, 0.9, 1.4, olive, 0, 0.1, 0.1)); // carriage
+    for (const sx of [-1, 1]) {
+      m.yaw.add(box(0.12, 0.9, 0.7, olive, sx * 0.55, 0.9, 0)); // trunnion cheeks
+      const seat = box(0.35, 0.08, 0.35, MAT.black(), sx * 1.0, 0.7, 0.4); // layers' seats
+      m.yaw.add(seat);
+    }
+    m.pitch.position.y = 1.3;
+    m.barrel.add(box(0.5, 0.45, 1.1, olive, 0, -0.22, 0.25)); // breech
+    m.barrel.add(box(0.3, 0.32, 0.4, MAT.paint('#6b5a34', 0.7), 0, 0.3, 0.3)); // clip of rounds
+    m.barrel.add(barrelMesh(2.9, 0.08, 0.06, MAT.black()).translateZ(-0.3));
+    const flash = mesh(new THREE.CylinderGeometry(0.1, 0.08, 0.3, 10), MAT.black());
+    flash.rotation.x = Math.PI / 2;
+    flash.position.z = -3.25;
+    m.barrel.add(flash);
+    m.barrel.add(box(1.4, 0.8, 0.06, olive, 0, -0.2, -0.45)); // shield
+    m.muzzle.position.set(0, 0, -3.45);
     for (const [x, z, r] of [[-1.8, 1.2, 2.4], [1.9, 0.8, -2.2]]) {
       const f = M.figure('#5a5340');
       f.position.set(x, 0, z);
@@ -874,17 +912,25 @@
 
   function heavyAA() {
     const g = new THREE.Group();
+    const olive = MAT.paint('#4b5233', 0.7);
     const wall = mesh(new THREE.CylinderGeometry(6, 6.4, 1.5, 28, 1, true), MAT.concrete());
     wall.material.side = DS;
     wall.position.y = 0.75;
     g.add(wall);
-    g.add(cyl(1.6, 1.9, 0.8, MAT.paint('#4b5233', 0.7)));
-    g.add(box(1.8, 1.6, 2.6, MAT.paint('#4b5233', 0.7), 0, 0.8, 0));
-    const barrel = mesh(new THREE.CylinderGeometry(0.11, 0.14, 5.4, 12), MAT.paint('#3c4229', 0.6));
-    barrel.geometry.translate(0, 2.7, 0);
-    barrel.position.set(0, 2.0, 0);
-    barrel.rotation.x = -0.8;
-    g.add(barrel);
+    g.add(cyl(1.6, 1.9, 0.6, olive)); // pedestal
+    for (let i = 0; i < 4; i++) { // outrigger legs
+      const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      g.add(strut(V3(Math.cos(a) * 1.3, 0.3, Math.sin(a) * 1.3), V3(Math.cos(a) * 3.4, 0.15, Math.sin(a) * 3.4), 0.12, olive));
+    }
+    const m = aimMount(g, 0.6, 'heavy');
+    m.yaw.add(box(2.0, 1.2, 2.8, olive, 0, 0, 0.3)); // carriage
+    for (const sx of [-1, 1]) m.yaw.add(box(0.15, 1.3, 1.2, olive, sx * 0.75, 1.1, 0));
+    m.yaw.add(box(0.6, 0.06, 1.2, MAT.metal('#5a5b55'), 1.3, 1.0, 0.8)); // loading tray
+    m.pitch.position.y = 2.0;
+    m.barrel.add(box(0.7, 0.7, 1.6, olive, 0, -0.1, 0.5)); // breech ring and cradle
+    m.barrel.add(barrelMesh(5.0, 0.16, 0.11, MAT.paint('#3c4229', 0.6)).translateZ(-0.3));
+    m.barrel.add(barrelMesh(2.2, 0.14, 0.14, olive).translateY(0.3).translateZ(-0.2)); // recuperator
+    m.muzzle.position.set(0, 0, -5.3);
     for (let i = 0; i < 4; i++) {
       const f = M.figure('#4f5c70');
       const a = (i / 4) * Math.PI * 2 + 0.4;
@@ -898,11 +944,19 @@
   function searchlight() {
     const g = new THREE.Group();
     g.add(sandbagRing(2.6, 1.0));
-    g.add(box(0.3, 1.3, 0.3, MAT.metal('#555'), -0.7, 0, 0), box(0.3, 1.3, 0.3, MAT.metal('#555'), 0.7, 0, 0));
+    g.add(cyl(0.6, 0.7, 0.3, MAT.metal('#555')));
+    const m = aimMount(g, 0.3, 'light');
+    m.yaw.add(box(0.3, 1.3, 0.3, MAT.metal('#555'), -0.85, 0, 0), box(0.3, 1.3, 0.3, MAT.metal('#555'), 0.85, 0, 0));
+    m.yaw.add(box(2.0, 0.15, 0.4, MAT.metal('#555')));
+    m.pitch.position.y = 1.2;
     const drum = mesh(new THREE.CylinderGeometry(0.75, 0.75, 1.1, 18), MAT.paint('#4b5233', 0.6));
-    drum.rotation.x = 1.0;
-    drum.position.y = 1.5;
-    g.add(drum);
+    drum.rotation.x = Math.PI / 2;
+    m.barrel.add(drum);
+    const lens = mesh(new THREE.CircleGeometry(0.68, 20), MAT.lamp(), false);
+    lens.rotation.y = Math.PI;
+    lens.position.z = -0.56;
+    m.barrel.add(lens);
+    m.muzzle.position.set(0, 0, -0.6);
     return withMeta(g, { lamp: V3(0, 2, 0) });
   }
 
@@ -916,7 +970,7 @@
 
   M.defenses = function (level) {
     const g = new THREE.Group();
-    const guns = [], lights = [];
+    const guns = [], lights = [], mounts = [];
     const place = (obj, [x, z]) => {
       obj.position.set(x, 0, z);
       obj.rotation.y = Math.atan2(x, z) + Math.PI; // face outward-ish
@@ -924,6 +978,7 @@
       obj.updateMatrixWorld(true);
       if (obj.userData.gun) guns.push(obj.localToWorld(obj.userData.gun.clone()));
       if (obj.userData.lamp) lights.push(obj.localToWorld(obj.userData.lamp.clone()));
+      if (obj.userData.mount) mounts.push({ ...obj.userData.mount, site: obj, phase: (x * 0.013 + z * 0.007) % 6.28 });
     };
     if (level >= 1) AA_SITES.lewis.forEach((p) => place(lewisPost(), p));
     if (level >= 2) AA_SITES.bofors.forEach((p) => place(boforsPit(), p));
@@ -932,7 +987,7 @@
       AA_SITES.lights.forEach((p) => place(searchlight(), p));
     }
     const a = AA_SITES.lewis[0];
-    return withMeta(g, { anchor: V3(a[0], 0, a[1]), footprint: { w: 8, d: 8 }, labelY: 5, guns, searchlights: lights, noScaffold: true });
+    return withMeta(g, { anchor: V3(a[0], 0, a[1]), footprint: { w: 8, d: 8 }, labelY: 5, guns, searchlights: lights, mounts, noScaffold: true });
   };
 
   // Blast walls between parking spots (open front and back so aircraft can taxi out and be towed in).
@@ -1041,6 +1096,29 @@
     // barrier and materials
     g.add(box(4, 0.8, 1.6, MAT.paint('#a59a82', 1), w / 2 + 3, 0, d / 2 - 2));
     g.add(box(3, 0.5, 1.2, MAT.brick(), w / 2 + 3, 0, d / 2 - 5));
+    g.add(box(2.2, 0.6, 1.2, MAT.timber(), w / 2 + 3.2, 0, d / 2 - 8)); // stacked planks
+    // cement mixer
+    const mixer = new THREE.Group();
+    const drum = mesh(new THREE.CylinderGeometry(0.35, 0.55, 0.9, 14), MAT.paint('#b7672e', 0.6));
+    drum.rotation.x = 0.9;
+    drum.position.y = 1.0;
+    mixer.add(drum, box(0.9, 0.5, 1.2, MAT.paint('#4a4b44', 0.7), 0, 0.2, 0.3));
+    for (const sx of [-1, 1]) mixer.add(vWheel(0.25, 0.1, sx * 0.5, 0.25, 0.6));
+    mixer.position.set(w / 2 + 2, 0, d / 2 + 2.5);
+    mixer.rotation.y = 0.6;
+    g.add(mixer);
+    // workmen: one at the mixer, one with a barrow, one up on the boards
+    const a = M.figure('#5b4f3f');
+    a.position.set(w / 2 + 2.9, 0, d / 2 + 3.8);
+    a.rotation.y = 2.6;
+    const b = M.figure('#4e5a68', 'walk');
+    b.position.set(w / 2 - 3, 0, d / 2 + 1.8);
+    b.rotation.y = -1.4;
+    const barrow = box(0.6, 0.35, 1.0, MAT.paint('#4a5038', 0.7), w / 2 - 4.1, 0.25, d / 2 + 1.8);
+    barrow.rotation.y = -1.4;
+    const c = M.figure('#5b4f3f');
+    c.position.set(-w / 4, Math.min(height, 2), d / 2 - 0.3);
+    g.add(a, b, barrow, c);
     return g;
   };
 

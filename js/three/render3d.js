@@ -11,7 +11,7 @@
 
   let renderer, scene, camera, canvas, env, statics, labelsEl, flashLight;
   let runwayGroup = null, runwayLevel = -1;
-  let lastNow = 0, visTime = null, lastW = 0, lastH = 0, clock = 0, shake = 0;
+  let lastNow = 0, visTime = null, lastW = 0, lastH = 0, lastOffset = 0, clock = 0, shake = 0;
   const buildings = {};          // id -> { group, key, meta, anchor, label, text }
   const planes = new Map();      // planeId -> view
   const slots = new Array(8).fill(null);
@@ -84,7 +84,8 @@
       else if (v.moving) goal.target.set(v.obj.position.x, 0, v.obj.position.z);
     }
 
-    const a = Math.min(1, dt * 7);
+    let a = Math.min(1, dt * 7);
+    if (cine.on) a = directCamera(dt);
     ctl.target.lerp(goal.target, a);
     ctl.theta += (goal.theta - ctl.theta) * a;
     ctl.phi += (goal.phi - ctl.phi) * a;
@@ -102,6 +103,93 @@
     }
     camera.position.y = Math.max(camera.position.y, 2);
     camera.lookAt(ctl.target);
+  }
+
+  // ---------- cinematic camera (behind the title menu) ----------
+  // Cuts between whatever is going on: a raid coming in, aircraft taxiing, a tow, a refuel,
+  // building work, pilots at dispersal. Each shot drifts slowly round its subject.
+  const cine = { on: false, shot: null, left: 0, theta: 0.6, last: '' };
+  let lastState = null;
+
+  R.setCinematic = function (on) {
+    cine.on = on;
+    cine.shot = null;
+    cine.left = 0;
+    if (!on) R.resetView();
+  };
+
+  function chooseShot() {
+    const s = lastState;
+    const shots = [];
+    const add = (kind, w, o) => shots.push({ kind, w, len: 12, spin: 0.06, ...o });
+    // follow an aircraft for as long as it's still doing what the shot is about
+    const at = (v, still) => () => (planes.get(v.id) === v && v.obj.visible && !v.wreck && still(v.data)
+      ? v.obj.position.clone().setY(Math.min(v.obj.position.y, 70)) : null);
+    if (raids.length) {
+      const r = raids[0];
+      const alive = () => raids.includes(r);
+      const center = () => r.start.clone().addScaledVector(r.dir, r.speed * r.t).setY(r.alt);
+      const ground = V3(0, 0, 40);
+      const theta = Math.atan2(r.dir.x, r.dir.z); // stand on the far side of the field, looking at them coming
+      add('raid', 5, { len: 16, raid: true, theta, phi: 1.3, radius: 360, spin: 0.015, target: () => (alive() ? ground.clone().lerp(center(), 0.32) : null) });
+      const guns = buildings.defenses && buildings.defenses.meta.guns;
+      if (guns && guns.length) {
+        const g = AF.pick(guns);
+        add('raid', 3, { len: 9, raid: true, theta: theta + 0.6, phi: 1.32, radius: 70, spin: 0.03, target: () => (alive() ? g.clone().setY(25) : null) });
+      }
+      return pickWeighted(shots);
+    }
+    add('wide', 1.2, { len: 14, radius: 330, phi: 1.0, spin: 0.05, target: () => V3(-10, 0, 30) });
+    for (const v of planes.values()) {
+      if (v.wreck || !v.data || !v.obj.visible) continue;
+      const st = v.data.status;
+      if (v.moving && (st === 'taxiing' || st === 'landing') && v.obj.position.y < 30) {
+        add('taxi', 4, { len: 11, radius: 34, phi: 1.2, spin: 0.07, theta: v.heading + 2.2, target: at(v, (p) => p.status === st) });
+      } else if (st === 'towing' && v.data.towTo === 'bay') {
+        add('tow', 3, { len: 10, radius: 46, phi: 1.0, spin: 0.08, target: at(v, (p) => p.status === 'towing') });
+      } else if (st === 'turnaround') {
+        add('refuel', 1.5, { len: 9, radius: 25, phi: 1.12, spin: 0.12, target: at(v, (p) => p.status === 'turnaround') });
+      } else if (s && AF.sim.atReadiness(s, v.data)) {
+        add('ready', 0.8, { len: 8, radius: 21, phi: 1.15, spin: 0.12, target: at(v, (p) => AF.sim.atReadiness(s, p)) });
+      }
+    }
+    if (s) {
+      for (const id of AF.BUILDING_ORDER) {
+        const rec = buildings[id];
+        if (!s.buildings[id].upgrading || !rec || rec.meta.noScaffold) continue;
+        const fp = rec.meta.footprint || { w: 30, d: 30 };
+        const anchor = rec.anchor.clone();
+        add('build', 2, { len: 10, radius: AF.clamp(Math.max(fp.w, fp.d) * 1.5, 40, 120), phi: 1.08, spin: 0.08, target: () => anchor });
+      }
+    }
+    const D = W.DISPERSAL;
+    add('dispersal', 0.8, { len: 8, radius: 26, phi: 1.12, spin: 0.08, target: () => V3(D.x, 1, D.z + 7) });
+    return pickWeighted(shots.filter((x) => x.kind !== cine.last || shots.length === 1));
+  }
+
+  function pickWeighted(list) {
+    let r = Math.random() * list.reduce((a, x) => a + x.w, 0);
+    for (const x of list) if ((r -= x.w) <= 0) return x;
+    return list[list.length - 1];
+  }
+
+  // Steer the camera goal for the current shot; returns how fast the camera follows it.
+  function directCamera(dt) {
+    cine.left -= dt;
+    let tg = cine.shot && cine.shot.target();
+    if (!cine.shot || cine.left <= 0 || !tg || (raids.length && !cine.shot.raid)) {
+      cine.shot = chooseShot();
+      cine.last = cine.shot.kind;
+      cine.left = cine.shot.len;
+      cine.theta = cine.shot.theta ?? ctl.theta + AF.rand(-0.9, 0.9);
+      tg = cine.shot.target() || V3(0, 0, 40);
+    }
+    cine.theta += cine.shot.spin * dt;
+    goal.target.copy(tg);
+    goal.radius = cine.shot.radius;
+    goal.phi = cine.shot.phi;
+    goal.theta = ctl.theta + wrap(cine.theta - ctl.theta);
+    return Math.min(1, dt * 1.1); // glide between shots
   }
 
   function bindInput() {
@@ -217,11 +305,13 @@
     labelsEl.className = 'labels3d';
     canvas.parentElement.appendChild(labelsEl);
 
-    R.debug = { get camera() { return camera; }, scene, renderer, ctl, goal, buildings, planes, raids };
+    R.debug = { get camera() { return camera; }, scene, renderer, ctl, goal, buildings, planes, raids, cine };
 
     hoverRing = makeRing('#ffffff', 0.55);
     selectRing = makeRing('#f0c24b', 0.9);
     initParticles();
+    initTracers();
+    renderer.localClippingEnabled = true; // buildings rise out of the ground while under construction
     bindInput();
   };
 
@@ -302,13 +392,25 @@
       const key = b.level + '|' + (b.upgrading ? 1 : 0);
       let rec = buildings[id];
       if (!rec || rec.key !== key) {
-        if (rec) { scene.remove(rec.group); MD.disposeTree(rec.group); removePickable(rec.group); }
+        if (rec) {
+          scene.remove(rec.group);
+          MD.disposeTree(rec.group);
+          removePickable(rec.group);
+          if (rec.rise) for (const m of rec.rise.mats) m.dispose();
+        }
         const group = new THREE.Group();
         const main = buildFor(id, b.level);
         const meta = main.userData;
         group.add(main);
+        // a new building rises out of its site as the work goes on
+        let rise = null;
+        if (b.upgrading && b.level === 0) {
+          const next = buildFor(id, 1);
+          rise = clipRising(next);
+          group.add(next);
+        }
         if (b.upgrading && !meta.noScaffold && !meta.empty) {
-          group.add(MD.scaffold(meta.footprint, b.level > 0 ? Math.max(5, meta.labelY * 0.7) : 4));
+          group.add(MD.scaffold(meta.scaffold || meta.footprint, b.level > 0 ? Math.max(5, meta.labelY * 0.7) : Math.max(4, rise ? rise.height * 0.85 : 4)));
         }
         const lay = W.LAYOUT[id];
         group.position.set(lay.x, 0, lay.z);
@@ -316,13 +418,14 @@
         scene.add(group);
         if (!meta.empty) pickables.push(group);
         const anchor = group.position.clone().add(meta.anchor || V3(0, 0, 0));
-        rec = buildings[id] = { group, key, meta, anchor, label: rec ? rec.label : makeLabel(), text: '' };
+        rec = buildings[id] = { group, key, meta, anchor, rise, label: rec ? rec.label : makeLabel(), text: '' };
       }
       const def = AF.BUILDINGS[id];
       let text = b.level ? `${def.name} · Lv ${b.level}` : `${def.name} — site`;
       if (b.upgrading) {
-        const pct = Math.round(((s.time - b.upgrading.startAt) / (b.upgrading.finishAt - b.upgrading.startAt)) * 100);
-        text += ` · building ${pct}%`;
+        const frac = AF.clamp(((AF.gameTime ?? s.time) - b.upgrading.startAt) / (b.upgrading.finishAt - b.upgrading.startAt), 0, 1);
+        text += ` · building ${Math.round(frac * 100)}%`;
+        if (rec.rise) rec.rise.plane.constant = 0.2 + rec.rise.height * frac;
       }
       if ((b.damage || 0) >= 50) text += ' · out of action';
       else if (b.damage) text += ' · damaged';
@@ -333,6 +436,28 @@
 
     const hg = buildings.hangar;
     if (hg && hg.meta.light) env.hangarLight.position.copy(hg.meta.light).add(hg.group.position);
+  }
+
+  // Give a model its own copies of its materials, cut off above a horizontal plane that the
+  // caller raises as construction progresses.
+  function clipRising(obj) {
+    const plane = new THREE.Plane(V3(0, -1, 0), 0.2);
+    const copies = new Map();
+    const swap = (m) => {
+      let c = copies.get(m);
+      if (!c) {
+        c = m.clone();
+        c.clippingPlanes = [plane];
+        c.clipShadows = true;
+        c.side = THREE.DoubleSide; // the cut leaves the insides showing
+        copies.set(m, c);
+      }
+      return c;
+    };
+    obj.traverse((o) => { if (o.isMesh) o.material = Array.isArray(o.material) ? o.material.map(swap) : swap(o.material); });
+    obj.updateMatrixWorld(true);
+    const height = new THREE.Box3().setFromObject(obj).max.y;
+    return { plane, height: Math.max(1, height), mats: [...copies.values()] };
   }
 
   function craterWorld(c) {
@@ -372,6 +497,46 @@
       parts.push({ sp, life: 0, max: 0, vel: V3(0, 0, 0), s0: 1, s1: 2, alpha: 0.5, drag: 0, additive: false });
     }
   }
+  // Tracer rounds: bright streaks drawn as one batch of line segments.
+  const TRACER_MAX = 700;
+  const tracers = [];
+  let tracerGeo = null;
+  function initTracers() {
+    tracerGeo = new THREE.BufferGeometry();
+    tracerGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(TRACER_MAX * 6), 3));
+    const lines = new THREE.LineSegments(tracerGeo, new THREE.LineBasicMaterial({
+      color: '#ff9f40', transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+    }));
+    lines.frustumCulled = false;
+    scene.add(lines);
+  }
+  // Fire one round from `from` toward `to` at speed (m per animation second), with some spread;
+  // delay staggers rounds in a burst.
+  function fire(from, to, speed, spread, delay) {
+    if (tracers.length >= TRACER_MAX) return;
+    const dir = to.clone().sub(from);
+    const dist = dir.length();
+    dir.normalize().add(V3(AF.rand(-spread, spread), AF.rand(-spread, spread), AF.rand(-spread, spread))).normalize();
+    tracers.push({ p: from.clone(), v: dir.multiplyScalar(speed), life: -delay, max: Math.min(2.5, (dist / speed) * 1.15) });
+  }
+  function updateTracers(dt) {
+    const pos = tracerGeo.attributes.position.array;
+    let n = 0;
+    for (let i = tracers.length - 1; i >= 0; i--) {
+      const t = tracers[i];
+      t.life += dt;
+      if (t.life > t.max) { tracers.splice(i, 1); continue; }
+      if (t.life < 0) continue;
+      t.p.addScaledVector(t.v, dt);
+      const k = n * 6;
+      pos[k] = t.p.x; pos[k + 1] = t.p.y; pos[k + 2] = t.p.z;
+      pos[k + 3] = t.p.x - t.v.x * 0.035; pos[k + 4] = t.p.y - t.v.y * 0.035; pos[k + 5] = t.p.z - t.v.z * 0.035;
+      n++;
+    }
+    tracerGeo.setDrawRange(0, n * 2);
+    tracerGeo.attributes.position.needsUpdate = true;
+  }
+
   function emit(pos, o) {
     const p = parts.find((q) => !q.sp.visible);
     if (!p) return;
@@ -420,6 +585,7 @@
     flak: { color: '#1f1e1c', life: 3.5, rise: 0.3, spread: 1, s0: 4, s1: 15, alpha: 0.75 },
     flakFlash: { color: '#ffd28a', life: 0.18, rise: 0, spread: 0, s0: 3, s1: 7, alpha: 1, additive: true },
     muzzle: { color: '#ffe0a0', life: 0.12, rise: 0, spread: 0, s0: 1.2, s1: 2.5, alpha: 1, additive: true },
+    strike: { color: '#ffc46a', life: 0.25, rise: 0, spread: 3, s0: 1.5, s1: 3.5, alpha: 1, additive: true },
   };
   R.FX = FX;
 
@@ -925,8 +1091,102 @@
     raids.push({
       id: r.id, t0: r.startAt, t: 0, start, dir, right, speed, alt, members, escorts, interceptors, bombs, beams,
       tCenter: approach, end: approach * 2 + 14, flakT: 0, aaLvl: AF.sim.lvl(s, 'defenses'),
-      guns: def && def.meta.guns ? def.meta.guns : [],
     });
+  }
+
+  // ---------- AA guns and searchlights ----------
+  // Each mount slews toward its target at its own rate (a Lewis gun swings round in a moment, a
+  // 3.7-inch gun takes its time), aims off ahead of the bomber, and only fires once it's on.
+  // Between raids the crews sweep their arc of sky.
+  const GUN = {
+    lewis: { slew: 2.4, shot: 420, range: 900, gap: [0.25, 0.55] },
+    bofors: { slew: 1.3, shot: 520, range: 1800, gap: [0.45, 0.85] },
+    heavy: { slew: 0.55, shot: 650, range: 3000, gap: [1.4, 2.4] },
+    light: { slew: 3, shot: 1, range: 0, gap: [1, 1] },
+  };
+  const shells = []; // heavy and Bofors shells in flight: { at, pos, big }
+  const tmpV = V3(0, 0, 0);
+
+  // Turn a mount toward the given angles (radians, in its site's frame); returns the error left.
+  function turnTo(m, yaw, elev, dt) {
+    const rate = GUN[m.kind].slew * dt;
+    const dy = wrap(yaw - m.yaw.rotation.y);
+    m.yaw.rotation.y += AF.clamp(dy, -rate, rate);
+    const de = AF.clamp(elev, -0.05, 1.45) - m.pitch.rotation.x;
+    m.pitch.rotation.x += AF.clamp(de, -rate * 0.8, rate * 0.8);
+    return Math.abs(wrap(yaw - m.yaw.rotation.y)) + Math.abs(AF.clamp(elev, -0.05, 1.45) - m.pitch.rotation.x);
+  }
+
+  function aimAt(m, world, dt) {
+    const p = m.site.worldToLocal(tmpV.copy(world));
+    p.y -= m.yaw.position.y + m.pitch.position.y;
+    return turnTo(m, Math.atan2(-p.x, -p.z), Math.atan2(p.y, Math.hypot(p.x, p.z)), dt);
+  }
+
+  function fireMount(m, aim) {
+    const g = GUN[m.kind];
+    const muzzle = m.muzzle.getWorldPosition(V3(0, 0, 0));
+    m.fireT = AF.rand(g.gap[0], g.gap[1]);
+    emit(muzzle, m.kind === 'heavy' ? { ...FX.muzzle, s0: 3, s1: 6, life: 0.2 } : FX.muzzle);
+    if (m.kind === 'lewis') {
+      for (let i = 0; i < 3; i++) fire(muzzle, aim, g.shot, 0.03, i * 0.07);
+      m.barrel.position.z = 0.05;
+    } else if (m.kind === 'bofors') {
+      for (let i = 0; i < 2; i++) fire(muzzle, aim, g.shot, 0.02, i * 0.22); // two-pounder tracer, a pair a clip
+      m.barrel.position.z = 0.3;
+      emit(muzzle, { ...FX.damage, life: 1.5, s1: 3, alpha: 0.35 });
+      if (Math.random() < 0.5) shells.push({ at: clock + muzzle.distanceTo(aim) / g.shot, pos: aim.clone().add(V3(AF.rand(-20, 20), AF.rand(-12, 12), AF.rand(-20, 20))), big: false });
+    } else if (m.kind === 'heavy') {
+      m.barrel.position.z = 0.55;
+      for (let i = 0; i < 3; i++) emit(muzzle, { ...FX.damage, life: 2.5, s0: 2, s1: 7, alpha: 0.45, spread: 2 });
+      shells.push({ at: clock + muzzle.distanceTo(aim) / g.shot, pos: aim.clone().add(V3(AF.rand(-35, 35), AF.rand(-20, 25), AF.rand(-35, 35))), big: true });
+      const d = muzzle.distanceTo(ctl.target);
+      if (d < 250) shake = Math.max(shake, 0.6 * (1 - d / 250));
+    }
+  }
+
+  function updateGuns(dt) {
+    const def = buildings.defenses;
+    const mounts = def && def.meta.mounts;
+    for (let i = shells.length - 1; i >= 0; i--) {
+      if (clock < shells[i].at) continue;
+      const sh = shells.splice(i, 1)[0];
+      emit(sh.pos, sh.big ? FX.flak : { ...FX.flak, s0: 2, s1: 7, life: 2 });
+      emit(sh.pos, sh.big ? FX.flakFlash : { ...FX.flakFlash, s0: 1.5, s1: 3.5 });
+    }
+    if (!mounts || !mounts.length || dt <= 0) return;
+    const raid = raids[0];
+    const alive = raid ? raid.members.filter((m) => m.obj.visible && !m.fall) : [];
+    const lights = mounts.filter((m) => m.kind === 'light');
+    for (const m of mounts) {
+      m.barrel.position.z = Math.max(0, m.barrel.position.z - dt * 1.8); // run out after recoil
+      if (m.kind === 'light') {
+        const b = raid && raid.beams[lights.indexOf(m)];
+        if (b && b.aim && b.beam.visible) {
+          const muzzle = m.muzzle.getWorldPosition(V3(0, 0, 0));
+          aimAt(m, muzzle.clone().addScaledVector(b.aim, 200), dt);
+          b.beam.position.copy(muzzle); // the beam comes out of the lens
+        } else {
+          turnTo(m, Math.sin(clock * 0.05 + m.phase) * 0.6, 0.9, dt);
+        }
+        continue;
+      }
+      const g = GUN[m.kind];
+      const near = alive.filter((a) => a.obj.position.distanceTo(m.site.position) < g.range * 1.4);
+      if (near.length) {
+        if (!m.target || !near.includes(m.target) || Math.random() < dt * 0.12) m.target = AF.pick(near);
+        const tgt = m.target.obj.position;
+        const dist = tgt.distanceTo(m.site.position);
+        const aim = tgt.clone().addScaledVector(raid.dir, raid.speed * (dist / g.shot)); // lead the target
+        const err = aimAt(m, aim, dt);
+        m.fireT = (m.fireT ?? Math.random()) - dt;
+        if (err < 0.1 && m.fireT <= 0 && dist < g.range) fireMount(m, aim);
+      } else {
+        m.target = null;
+        const t = clock * (m.kind === 'heavy' ? 0.05 : 0.11) + m.phase;
+        turnTo(m, Math.sin(t) * 0.9, (m.kind === 'lewis' ? 0.35 : 0.5) + Math.sin(t * 0.73 + 1) * 0.18, dt * 0.5);
+      }
+    }
   }
 
   // Aircraft ids targeted by bombs in raids still on screen (so a destroyed one becomes a wreck).
@@ -990,9 +1250,39 @@
       f.obj.position.y += 20 + Math.sin(k * 1.3) * 25;
       f.obj.rotation.set(Math.cos(k * 1.3) * 0.3, heading + Math.cos(k) * 0.4, -Math.cos(k) * 0.9);
       for (const pr of f.obj.userData.plane.props) { pr.blades.visible = false; pr.disc.visible = true; }
+      // short bursts of eight-gun fire at the nearest bomber, with strikes sparking on it
+      f.fireT = (f.fireT ?? Math.random()) - dt;
+      if (f.fireT <= 0 && alive.length && dt > 0) {
+        f.fireT = AF.rand(0.5, 1.3);
+        let best = null, bd = Infinity;
+        for (const m of alive) { const d = m.obj.position.distanceToSquared(f.obj.position); if (d < bd) { bd = d; best = m; } }
+        if (best && bd < 400 * 400) {
+          const span = f.obj.userData.plane.span * 0.3;
+          for (const sx of [-1, 1]) {
+            const muzzle = f.obj.localToWorld(V3(sx * span, -0.3, -2));
+            for (let i = 0; i < 3; i++) fire(muzzle, best.obj.position, 650, 0.025, i * 0.03);
+            emit(muzzle, FX.muzzle);
+          }
+          if (Math.random() < 0.6) emit(best.obj.position.clone().add(V3(AF.rand(-4, 4), AF.rand(-1, 2), AF.rand(-4, 4))), FX.strike);
+        }
+      }
     }
 
-    // flak bursts and gun flashes
+    // bomber gunners fire back at the fighters closing on them
+    const hunters = raid.interceptors.filter((f) => f.obj.visible);
+    if (hunters.length && dt > 0) {
+      for (const m of alive) {
+        if (Math.random() > dt * 0.9) continue;
+        const f = AF.pick(hunters);
+        if (m.obj.position.distanceToSquared(f.obj.position) < 350 * 350) {
+          const from = m.obj.localToWorld(V3(0, 1.1, 3));
+          fire(from, f.obj.position, 550, 0.05, 0);
+          fire(from, f.obj.position, 550, 0.05, 0.05);
+        }
+      }
+    }
+
+    // flak bursts, gun flashes, and streams of tracer from the light guns
     if (raid.aaLvl > 0 && alive.length && center.clone().setY(0).length() < 1500) {
       raid.flakT -= dt;
       if (raid.flakT <= 0) {
@@ -1001,7 +1291,6 @@
         const at = m.obj.position.clone().add(V3(AF.rand(-45, 45), AF.rand(-25, 30), AF.rand(-45, 45)));
         emit(at, FX.flak);
         emit(at, FX.flakFlash);
-        if (raid.guns.length) emit(AF.pick(raid.guns), FX.muzzle);
       }
     }
 
@@ -1010,7 +1299,8 @@
       b.beam.visible = near < 1800;
       const aim = center.clone().add(V3(Math.sin(t * 0.4 + b.ph) * 120, 0, Math.cos(t * 0.3 + b.ph) * 120)).sub(b.beam.position);
       aim.y = Math.max(aim.y, Math.hypot(aim.x, aim.z) * 0.55); // keep beams pointing up into the sky
-      b.beam.quaternion.setFromUnitVectors(UP, aim.normalize());
+      b.aim = aim.normalize(); // the searchlight's drum follows this (updateGuns)
+      b.beam.quaternion.setFromUnitVectors(UP, b.aim);
     }
 
     // bombs
@@ -1040,13 +1330,18 @@
 
     if (t > raid.end && !raid.members.some((m) => m.fall && m.obj.visible)) {
       for (const b of raid.bombs) landBomb(b);
-      for (const list of [raid.members, raid.escorts, raid.interceptors]) {
-        for (const m of list) { scene.remove(m.obj); MD.disposeTree(m.obj); }
-      }
-      for (const b of raid.beams) { scene.remove(b.beam); b.beam.geometry.dispose(); b.beam.material.dispose(); }
+      disposeRaid(raid);
       return true;
     }
     return false;
+  }
+
+  function disposeRaid(raid) {
+    for (const list of [raid.members, raid.escorts, raid.interceptors]) {
+      for (const m of list) { scene.remove(m.obj); MD.disposeTree(m.obj); }
+    }
+    for (const b of raid.beams) { scene.remove(b.beam); b.beam.geometry.dispose(); b.beam.material.dispose(); }
+    for (const b of raid.bombs) if (b.mesh) { scene.remove(b.mesh); b.mesh.geometry.dispose(); b.mesh = null; }
   }
 
   function landBomb(b) {
@@ -1173,16 +1468,21 @@
     lastNow = now;
 
     const cw = canvas.clientWidth, ch = canvas.clientHeight;
-    if (cw && ch && (cw !== lastW || ch !== lastH)) {
+    const offset = cine.on && cw > 760 ? -Math.round(cw * 0.17) : 0; // behind the menu, frame the action right of centre
+    if (cw && ch && (cw !== lastW || ch !== lastH || offset !== lastOffset)) {
       renderer.setSize(cw, ch, false);
       camera.aspect = cw / ch;
+      if (offset) camera.setViewOffset(cw, ch, offset, 0, cw, ch);
+      else camera.clearViewOffset();
       camera.updateProjectionMatrix();
       lastW = cw;
       lastH = ch;
+      lastOffset = offset;
     }
 
     // Everything animates on game time: one game minute plays as one second of animation, so
     // movement pauses and fast-forwards with the clock and always matches the simulation.
+    lastState = s;
     const gt = AF.gameTime ?? s.time;
     const jump = visTime === null || gt < visTime || gt - visTime > 30; // new game, load, or big skip
     const dt = jump ? 0 : Math.min(1, gt - visTime);
@@ -1191,6 +1491,7 @@
 
     syncBuildings(s);
     syncRaids(s, dt, gt); // before ensureViews, so aircraft destroyed by a bomb become wrecks
+    updateGuns(dt);
     ensureViews(s);
     updatePlanes(s, dt, gt);
     updateDispersal(s);
@@ -1200,6 +1501,7 @@
     env.follow(camera);
     ambient(s, dt, now);
     updateParticles(dt);
+    updateTracers(dt);
 
     const sh = selectedHit();
     placeRing(selectRing, sh && sh.id !== 'runway' ? sh : null, now);
@@ -1211,4 +1513,25 @@
   };
 
   R.raidActive = () => raids.length > 0;
+
+  // Forget everything drawn for the current game, ready to show a different one (switching
+  // between the title screen's demo station and the player's own). Buildings follow by themselves.
+  R.reset = function () {
+    for (const [id, v] of [...planes]) disposeView(id, v);
+    for (const r of raids) disposeRaid(r);
+    raids.length = 0;
+    for (const m of craterMeshes.values()) { scene.remove(m); m.geometry.dispose(); }
+    craterMeshes.clear();
+    for (const sc of scorch) { scene.remove(sc.mesh); sc.mesh.geometry.dispose(); sc.mesh.material.dispose(); }
+    scorch.length = 0;
+    for (const p of parts) p.sp.visible = false;
+    tracers.length = 0;
+    shells.length = 0;
+    flashLight.intensity = 0;
+    shake = 0;
+    R.selected = { building: null, plane: null };
+    R.hover = null;
+    R.followId = null;
+    visTime = null;
+  };
 })(window.AF);

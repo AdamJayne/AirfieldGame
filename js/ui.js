@@ -29,16 +29,8 @@
     $('btn-save').addEventListener('click', () => {
       UI.toast(AF.save(AF.state) ? 'Game saved.' : 'Could not save — browser storage unavailable.');
     });
-    $('btn-new').addEventListener('click', () => {
-      UI.confirm('Abandon this station and start a new game? Your current progress will be lost.', 'Start new game', () => {
-        AF.clearSave();
-        AF.state = AF.newGame();
-        UI.picks = {};
-        UI.tactics = {};
-        UI.scrambleSkip.clear();
-        UI.select(null);
-      });
-    });
+    $('btn-guide').addEventListener('click', () => AF.menu.openGuide('basics'));
+    $('btn-menu').addEventListener('click', () => AF.menu.show());
 
     $('modal-cancel').addEventListener('click', () => closeModal());
     $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
@@ -92,10 +84,18 @@
         else UI.select(null);
         return;
       }
-      if (e.target.matches('input, select, textarea') || !$('modal').hidden) return;
+      if (e.target.matches('input, select, textarea') || !$('modal').hidden || AF.menu.blocking()) return;
       if (e.code === 'Space') { e.preventDefault(); UI.setSpeed(AF.state.speed === 0 ? (UI.lastSpeed || 1) : 0); }
       else if (['Digit1', 'Digit2', 'Digit3'].includes(e.code)) UI.setSpeed(Number(e.code.slice(-1)));
     });
+  };
+
+  // Forget per-game choices (mission picks, tactics…) when a different game is loaded.
+  UI.resetSession = function () {
+    UI.picks = {};
+    UI.tactics = {};
+    UI.scrambleSkip.clear();
+    UI.dismissedRaidAt = null;
   };
 
   // Select an item (or null to clear): opens its info box and optionally centres the camera on it.
