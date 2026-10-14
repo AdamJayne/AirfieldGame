@@ -26,6 +26,21 @@ powershell -ExecutionPolicy Bypass -File tools\serve.ps1
 
 then open http://localhost:8765.
 
+## Deploying
+
+Pushing to `main` runs [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which builds
+the site and publishes it to GitHub Pages. The build (`tools/build.mjs`, using esbuild) bundles the
+local scripts into one minified, content-hashed file, minifies the stylesheet, and writes the
+result to `dist/`. To try the production build locally (needs Node.js):
+
+```powershell
+npm install
+npm run build
+powershell -ExecutionPolicy Bypass -File tools\serve.ps1 -Root dist
+```
+
+One-time setup: in the repo's **Settings → Pages**, set **Source** to **GitHub Actions**.
+
 ## Title menu
 
 The game opens on a title menu with a demo station playing behind it: a cinematic camera
